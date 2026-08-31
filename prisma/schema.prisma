@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model stations {
+  id            Int            @id @default(autoincrement())
+  nama          String
+  kota          String
+  geom          Unsupported("geography(Point,4326)")
+  entrance_geom Unsupported("geography(Point,4326)")?
+  created_at    DateTime?      @default(now()) @db.Timestamptz()
+  parking_lots  parking_lots[]
+  walk_distances walk_distances[]
+}
+
+model parking_lots {
+  id              Int            @id @default(autoincrement())
+  station_id      Int
+  nama            String
+  tipe            String
+  kapasitas_motor Int            @default(0)
+  kapasitas_mobil Int            @default(0)
+  tarif_motor     Int?
+  tarif_mobil     Int?
+  jam_operasional String?
+  geom            Unsupported("geography(Point,4326)")
+  sumber_data     String?
+  is_active       Boolean?       @default(true)
+  created_at      DateTime?      @default(now()) @db.Timestamptz()
+  updated_at      DateTime?      @default(now()) @db.Timestamptz()
+
+  station         stations       @relation(fields: [station_id], references: [id], onDelete: Restrict)
+  observations    observations[]
+  walk_distances  walk_distances[]
+  staging_survey_activities staging_survey_activities[]
+}
+
+model observations {
+  id           BigInt    @id @default(autoincrement())
+  lot_id       Int
+  observed_at  DateTime  @db.Timestamptz()
+  jumlah_motor Int       @default(0)
+  jumlah_mobil Int       @default(0)
+  sumber       String
+  catatan      String?
+  created_at   DateTime? @default(now()) @db.Timestamptz()
+
+  lot          parking_lots @relation(fields: [lot_id], references: [id], onDelete: Restrict)
+  
+  @@unique([lot_id, observed_at, sumber])
+}
+
+model walk_distances {
+  id           Int      @id @default(autoincrement())
+  lot_id       Int
+  station_id   Int
+  jarak_meter  Decimal
+  durasi_detik Int?
+  metode       String   @default("osrm_foot")
+  dihitung_at  DateTime? @default(now()) @db.Timestamptz()
+
+  lot          parking_lots @relation(fields: [lot_id], references: [id], onDelete: Cascade)
+  station      stations     @relation(fields: [station_id], references: [id], onDelete: Cascade)
+  
+  @@unique([lot_id, station_id])
+}
+
+model staging_survey_activities {
+  id           BigInt    @id @default(autoincrement())
+  raw_payload  Json
+  lot_id       Int?
+  status       String    @default("pending")
+  error_reason String?
+  processed    Boolean?  @default(false)
+  received_at  DateTime? @default(now()) @db.Timestamptz()
+  processed_at DateTime? @db.Timestamptz()
+
+  lot          parking_lots? @relation(fields: [lot_id], references: [id])
+}
