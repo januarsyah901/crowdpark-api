@@ -5,13 +5,12 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const pinoHttp = require('pino-http');
 const { v4: uuidv4 } = require('uuid');
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('./lib/prisma');
 const env = require('./config/env');
 
 const app = express();
-const prisma = new PrismaClient();
 
-// Trust proxy for CapRover / Nginx (needed for rateLimit + X-Forwarded-For)
+// Trust proxy for CapRover / Nginx
 app.set('trust proxy', 1);
 
 // Security headers
@@ -22,7 +21,6 @@ app.disable('x-powered-by');
 const allowedOrigins = env.FRONTEND_URL.split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow no-origin (curl, healthcheck, server-to-server)
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) return cb(null, true);
     return cb(null, false);
@@ -47,7 +45,7 @@ app.use(pinoHttp({
   customProps: (req) => ({ request_id: req.id }),
 }));
 
-// Rate limit — global + strict for AI
+// Rate limit — global
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 100,
@@ -57,19 +55,11 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-const aiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: { code: 'RATE_LIMITED', message: 'AI Insight limited to 10 req/min per IP.' } },
-});
-
-// Health — reports db + ml + uptime, always 200/503 with envelope
-// Supports both ML_SERVICE_URL (new) and ANALYTICS_URL (legacy alias) — see env.ML_URL
+// Health — reports db + ml + uptime
 app.get('/health', async (req, res) => {
   let dbStatus = 'down';
   let mlStatus = 'down';
+  let cacheSize = null;
   const mlUrl = env.ML_URL || env.ML_SERVICE_URL || env.ANALYTICS_URL || 'http://ml:8000';
 
   try {
@@ -87,29 +77,37 @@ app.get('/health', async (req, res) => {
       headers: { 'x-request-id': req.id },
     });
     clearTimeout(timeout);
-    if (response.ok) mlStatus = 'ok';
+    if (response.ok) {
+      mlStatus = 'ok';
+      try {
+        const mlHealth = await response.json();
+        cacheSize = mlHealth?.cache_size ?? null;
+      } catch (_) { /* ignore parse error */ }
+    }
   } catch (e) {
-    req.log.error({ err: e }, 'ML health check failed');
+    req.log.warn({ err: e }, 'ML health check failed');
   }
 
   const isHealthy = dbStatus === 'ok' && mlStatus === 'ok';
   res.status(isHealthy ? 200 : 503).json({
     success: isHealthy,
-    data: { db: dbStatus, ml: mlStatus, analytics: mlStatus, uptime: process.uptime() }, // analytics alias for backward compat
+    data: {
+      db: dbStatus,
+      ml: mlStatus,
+      analytics: mlStatus, // alias for backward compat
+      cache_size: cacheSize,
+      uptime: process.uptime(),
+    },
     meta: { request_id: req.id },
   });
 });
 
-// Placeholder routes — will be mounted as they are implemented (TASK-003 onwards)
-// Mount with aiLimiter for /api/v1/ai/insight
-app.use('/api/v1/ai', aiLimiter);
-
-// TODO: Uncomment as routes are implemented
-// app.use('/api/v1/stations', require('./routes/stations.routes'));
-// app.use('/api/v1/parking', require('./routes/parking.routes'));
-// app.use('/api/v1/ai', require('./routes/ai.routes'));
-// app.use('/api/v1/data', require('./routes/data.routes'));
-// app.use('/api/v1/stats', require('./routes/stats.routes'));
+// Mount routes
+app.use('/api/v1/stations', require('./routes/stations.routes'));
+app.use('/api/v1/parking', require('./routes/parking.routes'));
+app.use('/api/v1/ai', require('./routes/ai.routes'));
+app.use('/api/v1/data', require('./routes/data.routes'));
+app.use('/api/v1/stats', require('./routes/stats.routes'));
 
 // 404 handler
 app.use((req, res) => {
@@ -122,24 +120,22 @@ app.use((req, res) => {
 
 // Error handler (must have 4 args)
 app.use((err, req, res, _next) => {
-  req.log.error({ err }, 'Unhandled error');
+  req.log?.error({ err }, 'Unhandled error');
   const status = err.status || 500;
   res.status(status).json({
     success: false,
     error: { code: err.code || 'INTERNAL_ERROR', message: err.message || 'Internal server error' },
-    meta: { request_id: req.id },
+    meta: { request_id: req?.id },
   });
 });
 
 const PORT = env.PORT || 3000;
 
-// Only listen if run directly (allows supertest import without binding)
 if (require.main === module) {
   const server = app.listen(PORT, () => {
     console.log(`✅ API server listening on port ${PORT} [${env.NODE_ENV}] FRONTEND_URL=${env.FRONTEND_URL}`);
   });
 
-  // Graceful shutdown for deploy dev (CapRover sends SIGTERM)
   const shutdown = async () => {
     console.log('Shutting down...');
     server.close(async () => {
