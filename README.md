@@ -4,6 +4,9 @@ Repository ini memuat konfigurasi, skema migrasi database, dan Supabase Edge Fun
 
 Arsitektur monolitik Express.js lama telah diarsipkan ke branch `legacy-express`. Implementasi aktif saat ini sepenuhnya berjalan di atas layanan serverless Supabase.
 
+> [!NOTE]
+> **Catatan Penggunaan Data:** Data sampel observasi dan volume kendaraan pada migrasi database saat ini menggunakan data dummy (sintetis). Hal ini dikarenakan keterbatasan waktu dan keterbatasan sumber daya manusia (SDM) untuk survei lapangan langsung.
+
 ## Struktur Direktori
 
 ```text
